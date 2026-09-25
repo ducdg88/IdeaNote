@@ -1,0 +1,9 @@
+{
+  "name": "Idea Note",
+  "short_name": "Idea Note",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f6f5f2",
+  "theme_color": "#f59e0b",
+  "icons": [{"src": "/icon.png", "sizes": "512x512", "type": "image/png"}]
+}

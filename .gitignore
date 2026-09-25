@@ -1,0 +1,16 @@
+# dữ liệu cá nhân: ghi chú, ảnh, mật khẩu Gmail (đã mã hoá), khoá mở điện thoại, chứng chỉ HTTPS
+data/
+# model giọng nói (tải riêng, rất nặng)
+models/
+# bản build
+bin/
+IdeaNotebin/
+release/
+build/
+dist/
+*.spec
+__pycache__/
+*.pyc
+# tài liệu nội bộ, file tạm
+intent/
+bấm
