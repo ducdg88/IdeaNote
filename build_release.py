@@ -26,7 +26,8 @@ def main():
     shutil.rmtree(dist, ignore_errors=True)
     cmd = [sys.executable, "-m", "PyInstaller", "--noconfirm", "--windowed", "--onedir", "--name", "IdeaNote",
            "--icon", os.path.join(ROOT, "icon.ico"), "--paths", ROOT, "--distpath", dist, "--workpath", work,
-           "--specpath", work, "--hidden-import", "knowledge"]
+           "--specpath", work, "--hidden-import", "knowledge",
+           "--collect-data", "faster_whisper"]  # silero_vad_v6.onnx: thiếu là ghi âm điện thoại + lọc im lặng lỗi
     cmd += [f"--exclude-module={m}" for m in EXCLUDE] + [os.path.join(ROOT, "ideanote_app.py")]
     subprocess.run(cmd, check=True, cwd=ROOT)
     app = os.path.join(dist, "IdeaNote")

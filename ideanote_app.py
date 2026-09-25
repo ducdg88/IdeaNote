@@ -1327,6 +1327,7 @@ class Voice(QObject):
     def _job(self):
         origin = self.origin
         try:
+            self.win.ear.ensure()  # bộ nghe chưa nạp / đã nhả vì lâu không dùng -> nạp song song lúc đang nói
             pcm = self.win.ear.record(on_level=lambda lv, talk: self.level.emit(lv, talk), device=self.mic_index())
             self.recording = False
             st = self.win.ear.last_stats
@@ -1334,9 +1335,10 @@ class Voice(QObject):
                 A.Ear.save_wav(pcm, os.path.join(S.DATA, "voice-last.wav"))
             except OSError:
                 pass
+            self.win.ear.ensure()
             if not self.win.ear.ready.is_set():
                 self.state.emit("loading")
-            self.win.ear.ready.wait()
+                self.win.ear.ready.wait()
             self.state.emit("recognize")
             hint = ", ".join(p["name"] for p in self.win.projects()[:8])
             text = self.win.ear.transcribe(pcm, hint=hint)
@@ -1576,8 +1578,7 @@ class Main(QWidget):
         self.save_timer.setSingleShot(True)
         self.save_timer.timeout.connect(self.save_text)
         self.refresh(force=True)
-        # nạp sẵn bộ nghe ở nền để lúc cần nói là dùng ngay (AI Ollama chỉ nạp khi mở 💬 Trò chuyện)
-        QTimer.singleShot(3000, lambda: threading.Thread(target=self.ear.load, daemon=True).start())
+        # bộ nghe (~1,5 GB) KHÔNG nạp sẵn nữa: bấm nói mới nạp, 15 phút không dùng thì tự nhả (assistant.EAR_IDLE_S)
 
     # ----- dựng giao diện -----
     def build(self):
@@ -2053,6 +2054,11 @@ class Main(QWidget):
         self.rev = S.REV[0]
         self.notes = snapshot()
         self.by_id = {n["id"]: n for n in self.notes}
+        if not self.isVisible():  # đang ẩn xuống khay: chỉ cập nhật số trên bong bóng, mở ra mới vẽ lại danh sách
+            self._stale = True
+            self.bubble.set_count(sum(1 for n in self.notes if not n.get("deleted") and (is_urgent(n) or overdue(n))))
+            return
+        self._stale = False
         self.render_side()
         self.render_list()
         self.mark_calendar()
@@ -2904,13 +2910,13 @@ class Main(QWidget):
         cap = o == "capture" and s != "idle"  # listen / loading / recognize
         self.vrow.setVisible(cap)
         self.vlabel.setText({"listen": "🎙 Đang nghe… nói xong ngừng 1 giây (hoặc bấm ⏹)", "recognize": "⏳ Đang chuyển giọng nói thành chữ…",
-                             "loading": "⏳ Đang nạp bộ nghe (lần đầu sau khi bật máy, khoảng 1 phút)…"}.get(s, ""))
+                             "loading": "⏳ Đang nạp bộ nghe (lâu không dùng nên nạp lại, chừng 20 giây)…"}.get(s, ""))
         self.b_mic.setText("⏹ Dừng" if cap and s == "listen" else "🎙 Nói")
         self.b_mic.setProperty("rec", cap and s == "listen")
         self.b_mic.style().polish(self.b_mic)
         if o == "bubble":
             msg = {"listen": "🎙 Đang nghe… nói xong ngừng 1 giây", "recognize": "⏳ Đang nhận dạng giọng nói…",
-                   "loading": "⏳ Đang nạp bộ nghe (lần đầu sau khi bật máy, khoảng 1 phút)…",
+                   "loading": "⏳ Đang nạp bộ nghe (lâu không dùng nên nạp lại, chừng 20 giây)…",
                    "think": "🤖 Đang xử lý…"}.get(s)
             if msg:
                 self.toast.say(msg, ms=0)
@@ -2967,6 +2973,11 @@ class Main(QWidget):
             self.tray.showMessage("Đã tắt bong bóng nổi",
                                   "Bật lại: chuột phải icon Idea Note ở khay (góc phải dưới màn hình) → bỏ chọn “Tắt bong bóng”.",
                                   QIcon(ICON), 8000)
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        if getattr(self, "_stale", False):
+            QTimer.singleShot(0, lambda: self.refresh(force=True))
 
     def changeEvent(self, e):
         if e.type() == QEvent.Type.WindowStateChange:
@@ -3107,8 +3118,20 @@ class Main(QWidget):
         bl.addWidget(t)
         gm = QLineEdit(S.CONF.get("gmail") or S.CONF.get("email", ""))
         gm.setPlaceholderText("ban@gmail.com")
-        bl.addWidget(QLabel("Gmail của anh/chị (gửi và nhận):"))
+        bl.addWidget(QLabel("Gmail dùng để GỬI thư (đăng nhập bằng Mật khẩu ứng dụng bên dưới):"))
         bl.addWidget(gm)
+        bl.addWidget(QLabel("Gmail NHẬN nhắc hẹn + lời mời lịch (để trống = gửi cho chính Gmail trên):"))
+        mto = QLineEdit(S.CONF.get("mail_to", ""))
+        mto.setPlaceholderText("để trống = chính Gmail gửi")
+        bl.addWidget(mto)
+        bl.addWidget(QLabel("Tên người gửi hiện trong hộp thư:"))
+        mname = QLineEdit(M.sender_name())
+        mname.setPlaceholderText("Idea Note")
+        bl.addWidget(mname)
+        tip = QLabel("<span style='color:#6b6b72'>Gmail luôn ghi “tôi” khi thư đi từ chính địa chỉ đang đọc. Muốn thấy "
+                     "tên ở trên thì gửi bằng một Gmail riêng (ô GỬI) và điền Gmail của anh/chị vào ô NHẬN.</span>")
+        tip.setWordWrap(True)
+        bl.addWidget(tip)
         bl.addWidget(QLabel("Mật khẩu ứng dụng Gmail (16 ký tự, không phải mật khẩu đăng nhập):"))
         pw = QLineEdit()
         pw.setEchoMode(QLineEdit.EchoMode.Password)
@@ -3135,7 +3158,7 @@ class Main(QWidget):
             mstat.setText("✓ Gửi được lúc " + M.LAST["sent"])
 
         def save_mail():
-            M.set_account(gm.text(), pw.text() or None)
+            M.set_account(gm.text(), pw.text() or None, name=mname.text(), to=mto.text())
             pw.clear()
             pw.setPlaceholderText("đã lưu (mã hoá bằng Windows) — để trống nếu không đổi")
             S.CONF["mail_invite"], S.CONF["mail_due"] = inv.isChecked(), due.isChecked()
@@ -3149,7 +3172,7 @@ class Main(QWidget):
             mstat.setText("⏳ Đang gửi thử…")
             QApplication.processEvents()
             err = M.send_test()
-            mstat.setText("⚠️ " + err if err else f"✓ Đã gửi — mở Gmail ({S.CONF['gmail']}) xem thư “Idea Note”.")
+            mstat.setText("⚠️ " + err if err else f"✓ Đã gửi, mở Gmail ({M.recipient()}) xem thư “{M.sender_name()}”.")
 
         test.clicked.connect(do_test)
         mrow.addWidget(test)

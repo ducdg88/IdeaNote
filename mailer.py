@@ -18,7 +18,7 @@ import time
 import urllib.parse
 import uuid
 from email.message import EmailMessage
-from email.utils import make_msgid
+from email.utils import formataddr, make_msgid
 
 import server as S
 
@@ -67,8 +67,23 @@ def configured():
     return bool(c.get("gmail") and c.get("gmail_pw"))
 
 
-def set_account(gmail, app_password=None):
+def sender_name():
+    """Tên hiện ở ô người gửi. Gmail vẫn ghi "tôi" nếu thư gửi từ chính địa chỉ đang đọc -> muốn thấy tên thì
+    gửi bằng một Gmail riêng (mail_to = Gmail của anh/chị)."""
+    return (S.CONF.get("mail_name") or "").strip() or "Idea Note"
+
+
+def recipient():
+    """Gmail nhận thư nhắc + lời mời lịch. Để trống = gửi cho chính Gmail dùng để gửi."""
+    return (S.CONF.get("mail_to") or "").strip() or S.CONF["gmail"]
+
+
+def set_account(gmail, app_password=None, name=None, to=None):
     S.CONF["gmail"] = (gmail or "").strip()
+    if name is not None:
+        S.CONF["mail_name"] = " ".join(name.split())[:60]
+    if to is not None:
+        S.CONF["mail_to"] = to.strip()
     if app_password:
         S.CONF["gmail_pw"] = protect(app_password.replace(" ", "").strip())
     S.save(S.CONF_F, S.CONF)
@@ -97,7 +112,7 @@ def ics(n, method, seq, to):
              *([f"RRULE:FREQ={'WEEKLY' if n['repeat'] == 'weekly' else 'DAILY'}"] if n.get("repeat") else []),
              f"SUMMARY:{_esc(('🔴 ' if n.get('urgent') else '') + title)}",
              f"DESCRIPTION:{_esc(text + (chr(10) + 'Dự án: ' + n['project'] if n.get('project') else ''))}",
-             "ORGANIZER;CN=Idea Note:mailto:idea-note@invalid",
+             "ORGANIZER;CN=\"" + sender_name().replace('"', "") + "\":mailto:idea-note@invalid",
              f"ATTENDEE;CN={to};ROLE=REQ-PARTICIPANT;PARTSTAT=ACCEPTED;RSVP=FALSE:mailto:{to}",
              f"STATUS:{'CANCELLED' if method == 'CANCEL' else 'CONFIRMED'}", "TRANSP:OPAQUE",
              "BEGIN:VALARM", "ACTION:DISPLAY", f"DESCRIPTION:{_esc(title)}", "TRIGGER:-PT10M", "END:VALARM",
@@ -264,9 +279,9 @@ def _plain(n, kind):
 
 def build(n, kind, seq):
     """kind: invite | cancel | due | test | preview"""
-    to = S.CONF["gmail"]
+    to = recipient()
     m = EmailMessage()
-    m["From"] = f"Idea Note <{to}>"
+    m["From"] = formataddr((sender_name(), S.CONF["gmail"]))
     m["To"] = to
     m["Message-ID"] = f"<{uuid.uuid4().hex}@ideanote>"
     title = _title(n)

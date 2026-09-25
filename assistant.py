@@ -24,6 +24,7 @@ WHISPER = [(os.path.join(MODELS, "large-v3-turbo"), "cuda", "int8_float16"),
            (os.path.join(MODELS, "small"), "cpu", "int8"),
            ("mobiuslabsgmbh/faster-whisper-large-v3-turbo", "cuda", "int8_float16"),
            ("Systran/faster-whisper-small", "cpu", "int8")]
+EAR_IDLE_S = 15 * 60  # bộ nghe chiếm ~1,5 GB: không nói gì 15 phút thì nhả, lần nói sau tự nạp lại
 THU = ["thứ hai", "thứ ba", "thứ tư", "thứ năm", "thứ sáu", "thứ bảy", "chủ nhật"]
 STATUS_VI = {"note": "ý tưởng", "todo": "chưa làm", "doing": "đang làm", "verify": "đã làm, chờ verify", "done": "xong"}
 
@@ -33,7 +34,7 @@ HALLUCINATION = re.compile(r"(subscribe|đăng ký kênh|ghiền mì gõ|cảm �
 
 # ---------- nghe ----------
 class Ear:
-    """Thu mic + nhận dạng tiếng Việt. Model nạp một lần ở nền."""
+    """Thu mic + nhận dạng tiếng Việt. Model chỉ nạp khi cần nghe (ensure), để lâu không dùng thì tự nhả bộ nhớ."""
 
     def __init__(self):
         self.model = None
@@ -43,6 +44,40 @@ class Ear:
         self.stop_flag = threading.Event()
         self.lock = threading.Lock()
         self.last_stats = {}
+        self.loading = False
+        self.last_used = 0.0
+        self._state = threading.Lock()
+        self._watching = False
+
+    def ensure(self):
+        """Bắt đầu nạp model ở nền nếu chưa có (gọi lúc bắt đầu thu mic để vừa nói vừa nạp)."""
+        self.last_used = time.time()
+        with self._state:
+            if self.model is not None or self.loading:
+                return
+            self.loading = True
+            self.ready.clear()
+            if not self._watching:
+                self._watching = True
+                threading.Thread(target=self._idle_loop, daemon=True).start()
+        threading.Thread(target=self.load, daemon=True).start()
+
+    def _idle_loop(self):
+        while True:
+            time.sleep(60)
+            if self.model is None or self.loading or time.time() - self.last_used < EAR_IDLE_S:
+                continue
+            if not self.lock.acquire(blocking=False):  # đang nhận dạng thì để lượt sau
+                continue
+            try:
+                with self._state:
+                    self.model = None
+                    self.ready.clear()
+                import gc
+                gc.collect()
+                S.log("bộ nghe: nhả bộ nhớ sau", EAR_IDLE_S // 60, "phút không dùng")
+            finally:
+                self.lock.release()
 
     def load(self):
         # bản .exe không đóng gói torch (3.5 GB) — mượn cuBLAS trong torch của Python đã cài trên máy nếu có
@@ -69,8 +104,11 @@ class Ear:
             except Exception as e:  # thiếu VRAM / thiếu CUDA -> xuống CPU
                 self.err = repr(e)
                 S.log("bộ nghe không nạp được", name, dev, self.err[:200])
-        S.log("bộ nghe:", self.device or "KHÔNG NẠP ĐƯỢC")
-        self.ready.set()
+        S.log("bộ nghe:", self.device if self.model is not None else "KHÔNG NẠP ĐƯỢC")
+        self.last_used = time.time()
+        with self._state:
+            self.loading = False
+            self.ready.set()
 
     @staticmethod
     def devices():
@@ -165,7 +203,9 @@ class Ear:
 
     def _transcribe(self, pcm, hint=""):
         import numpy as np
+        self.ensure()  # đang giữ self.lock nên luồng nhả bộ nhớ không chen vào giữa
         self.ready.wait()
+        self.last_used = time.time()
         if not self.model:
             raise RuntimeError("Không nạp được model nghe: " + str(self.err))
         audio = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
