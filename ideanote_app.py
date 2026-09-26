@@ -2558,10 +2558,53 @@ class Main(QWidget):
         m.addAction("🗑 Xoá ảnh này", lambda: self.save_field(images=[x for x in n.get("images", []) if x != f]))
         m.exec(self.d_imgs.mapToGlobal(pos))
 
+    # ----- chống quên lưu -----
+    def flush_detail(self):
+        """Ghi ngay mọi chỗ đang sửa ở khung phải (chữ đang chờ 0,5 giây, tiêu đề, bằng chứng).
+        Trước đây chuyển thư mục trong nửa giây sau khi gõ là mất lần sửa cuối."""
+        if self.save_timer.isActive():
+            self.save_timer.stop()
+            self.save_text()
+        self.save_title()
+        self.save_proof()
+
+    def leave_ok(self, quitting=False):
+        """Trước khi chuyển thư mục / ngày / thoát: lưu chỗ đang sửa; ô Ghi nhanh còn chữ / ảnh chưa lưu thì hỏi.
+        Trả về False nếu chọn Ở lại."""
+        self.flush_detail()
+        text, title = self.txt.toPlainText().strip(), self.ctitle.text().strip()
+        if not (text or title or self.pend):
+            return True
+        head = (title or (text.splitlines()[0] if text else "") or f"{len(self.pend)} ảnh")[:70]
+        where = self.cproj.currentText().strip() or "Chưa gắn dự án"
+        box = QMessageBox(self)
+        box.setWindowTitle("Idea Note · Chưa lưu")
+        box.setIcon(QMessageBox.Icon.Warning)
+        extra = f"  (+{len(self.pend)} ảnh)" if self.pend and (text or title) else ""
+        box.setText(f"Ghi chú đang gõ ở ô Ghi nhanh CHƯA LƯU:\n\n“{head}”{extra}\n\nLưu vào 📁 {where} "
+                    + ("trước khi thoát?" if quitting else "trước khi chuyển?"))
+        b_save = box.addButton("💾 Lưu rồi " + ("thoát" if quitting else "chuyển"), QMessageBox.ButtonRole.AcceptRole)
+        b_keep = box.addButton("Thoát, bỏ ghi chú này" if quitting else "Để trong ô, lưu sau", QMessageBox.ButtonRole.DestructiveRole)
+        b_stay = box.addButton("Ở lại", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(b_save)
+        box.setEscapeButton(b_stay)
+        box.exec()
+        c = box.clickedButton()
+        if c is b_save:
+            self.create()
+            return True
+        if c is b_keep:
+            return True
+        self.txt.setFocus()
+        return False
+
     # ----- sự kiện -----
     def on_side(self, it):
         key = it.data(Qt.ItemDataRole.UserRole)
         if key is None:
+            return
+        if not self.leave_ok():
+            self.refresh(force=True)  # vẽ lại cột trái để mục đang chọn về đúng chỗ cũ
             return
         self.search.blockSignals(True)
         self.search.clear()
@@ -2577,6 +2620,8 @@ class Main(QWidget):
         self.refresh(force=True)
 
     def show_project_done(self):
+        if not self.leave_ok():
+            return
         self.done_scope, self.filter, self.sel = self.proj or "", "done", None
         self.refresh(force=True)
 
@@ -2588,20 +2633,21 @@ class Main(QWidget):
         return self.order[i + 1] if i + 1 < len(self.order) else (self.order[i - 1] if i > 0 else None)
 
     def on_day(self, qd):
+        if not self.leave_ok():
+            return
         self.filter, self.day, self.q = "day", qd.toString("yyyy-MM-dd"), ""
         self.sel = None
         self.refresh(force=True)
 
     def on_search(self, t):
+        self.flush_detail()  # gõ tìm kiếm: chỉ lưu chỗ đang sửa, không hỏi (ô Ghi nhanh vẫn giữ chữ)
         self.q = t.strip()
         self.sel = None
         self.refresh(force=True)
 
     def on_select(self, it, _prev=None):
         if it and it.data(Qt.ItemDataRole.UserRole + 1) == "n":
-            if self.save_timer.isActive():
-                self.save_timer.stop()
-                self.save_text()
+            self.flush_detail()  # lưu ghi chú cũ (chữ, tiêu đề, bằng chứng) trước khi mở ghi chú khác
             self.sel = it.data(Qt.ItemDataRole.UserRole)
             self.fill_detail()
 
@@ -3023,6 +3069,10 @@ class Main(QWidget):
             save_app_conf(self.conf)
 
     def quit_all(self):
+        if not self.isVisible():
+            self.show_main()  # đang ẩn dưới khay mà ô Ghi nhanh còn chữ: mở ra để thấy câu hỏi
+        if not self.leave_ok(quitting=True):
+            return
         self.save_timer.stop()
         self.save_text()
         self.save_geom()
