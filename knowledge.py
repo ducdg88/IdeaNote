@@ -42,6 +42,13 @@ def _vec_f():
     return os.path.join(S.DATA, "kb-vec.json")
 
 
+def _write(path, body):
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(body)
+    os.replace(tmp, path)
+
+
 def fold(s):
     s = unicodedata.normalize("NFD", s or "")
     return "".join(c for c in s if unicodedata.category(c) != "Mn").replace("đ", "d").replace("Đ", "D").lower()
@@ -167,7 +174,8 @@ def ocr_batch(names):
                 OCR[f] = {"text": clean_ocr(got[p]), "engine": eng, "q": q, "at": now}
             else:
                 OCR[f] = {"text": "", "engine": eng, "q": q, "at": now, "fail": True}
-        S.save(_ocr_f(), OCR)
+        body = json.dumps(OCR, ensure_ascii=False, indent=1)
+    _write(_ocr_f(), body)  # ghi ngoài LOCK: ổ HDD nghẽn thì chỉ luồng này chờ
     S.REV[0] += 1  # trang điện thoại / app vẽ lại để thấy chữ trong ảnh
 
 
@@ -262,7 +270,9 @@ def embed_ready():
 
 
 def embed(texts):
-    j = _post("/api/embed", {"model": EMBED, "input": [t[:2000] for t in texts], "keep_alive": "10m"}, 120)
+    # num_gpu 0: tính bằng CPU, không chen vào card đồ hoạ (card hay đầy vì Verba / bot khác -> cả máy giật)
+    j = _post("/api/embed", {"model": EMBED, "input": [t[:2000] for t in texts], "keep_alive": "10m",
+                             "options": {"num_gpu": 0}}, 180)
     return j["embeddings"]
 
 
@@ -309,7 +319,8 @@ def index_once():
                         keep = {_key(c["text"]) for c in cs}
                         for k in [k for k in VEC if k not in keep]:
                             del VEC[k]
-                    S.save(_vec_f(), VEC)
+                    body = json.dumps(VEC, ensure_ascii=False)
+                _write(_vec_f(), body)
                 return True
             except Exception as e:
                 STATE["err"] = f"Ollama chưa tính được vector: {e!r}"[:300]
@@ -319,12 +330,17 @@ def index_once():
     return False
 
 
+QUIET_S = 30  # đang gõ / đang thêm ghi chú thì chờ yên 30 giây mới đọc ảnh + học nghĩa, khỏi chạy theo từng phím
+
+
 def _loop():
-    seen = -1
+    seen, changed = -1, 0.0
     while True:
         try:
-            if S.REV[0] != seen or STATE["busy"]:
-                seen = S.REV[0]
+            if S.REV[0] != seen:
+                seen, changed = S.REV[0], time.time()
+            if changed and (time.time() - changed >= QUIET_S or STATE["busy"]):
+                changed = 0.0 if not STATE["busy"] else changed
                 if index_once():
                     time.sleep(0.5)
                     continue

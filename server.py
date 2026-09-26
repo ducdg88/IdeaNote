@@ -5,6 +5,7 @@ Chạy nền ở cổng 41900. Máy tính mở http://127.0.0.1:41900,
 điện thoại cùng Wi-Fi quét mã QR trong app (có khóa riêng).
 Dữ liệu nằm trong thư mục data/ cạnh file này, tự sao lưu mỗi ngày.
 """
+import atexit
 import base64
 import datetime as dt
 import json
@@ -82,15 +83,57 @@ ON_DUE = None  # app gán hàm(note) để tự hiện cửa sổ nhắc thay ch
 ON_VOICE = None  # app gán hàm(bytes, đuôi file) -> dict: nhận ghi âm từ điện thoại, nghe bằng Whisper rồi lưu
 
 
+# Lưu ghi chú ở LUỒNG NỀN, không giữ LOCK lúc ghi đĩa: data nằm trên ổ E: (HDD hay nghẽn), 1 lần ghi có lúc
+# mất 15 đến 40 giây. Trước đây persist() ghi ngay trong LOCK -> cửa sổ app chờ LOCK mỗi 1,2 giây -> đơ, con trỏ xoay.
+_DIRTY = threading.Event()
+_WLOCK = threading.Lock()  # chỉ 1 lần ghi file cùng lúc (luồng nền + lúc thoát app)
+
+
 def persist():
+    """Báo dữ liệu đã đổi. Luồng nền gom các lần sửa liền nhau rồi ghi notes.json (xem flush)."""
     REV[0] += 1
-    save(NOTES_F, NOTES)
-    day = os.path.join(BACKUP, f"notes-{dt.date.today():%Y-%m-%d}.json")
-    if not os.path.exists(day):
-        shutil.copy2(NOTES_F, day)
-        olds = sorted(f for f in os.listdir(BACKUP) if f.startswith("notes-"))
-        for f in olds[:-30]:
-            os.remove(os.path.join(BACKUP, f))
+    _DIRTY.set()
+
+
+def flush():
+    """Ghi notes.json ngay (luồng nền gọi, và gọi lúc thoát app để không mất lần sửa cuối)."""
+    with _WLOCK:
+        _DIRTY.clear()
+        with LOCK:  # chỉ giữ LOCK lúc chuyển thành chữ (vài ms), ghi đĩa thì thả ra
+            body = json.dumps(NOTES, ensure_ascii=False, indent=1)
+        tmp = NOTES_F + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(body)
+        for i in range(10):  # Windows: file đang bị app khác mở đọc thì os.replace báo lỗi -> thử lại
+            try:
+                os.replace(tmp, NOTES_F)
+                break
+            except PermissionError:
+                if i == 9:
+                    raise
+                time.sleep(0.3)
+        day = os.path.join(BACKUP, f"notes-{dt.date.today():%Y-%m-%d}.json")
+        if not os.path.exists(day):
+            shutil.copy2(NOTES_F, day)
+            olds = sorted(f for f in os.listdir(BACKUP) if f.startswith("notes-"))
+            for f in olds[:-30]:
+                os.remove(os.path.join(BACKUP, f))
+
+
+def _writer():
+    while True:
+        _DIRTY.wait()
+        time.sleep(0.5)  # gõ liền tay / thêm nhiều ghi chú cùng lúc -> 1 lần ghi
+        try:
+            flush()
+        except Exception as e:
+            log("lưu ghi chú lỗi (thử lại sau 5 giây):", repr(e))
+            _DIRTY.set()
+            time.sleep(5)
+
+
+threading.Thread(target=_writer, daemon=True, name="notes-writer").start()
+atexit.register(lambda: _DIRTY.is_set() and flush())
 
 
 def now_local():

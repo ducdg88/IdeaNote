@@ -271,11 +271,21 @@ def load_app_conf():
         return {}
 
 
+_APP_LOCK = threading.Lock()
+_APP_LATEST = [None]
+
+
 def save_app_conf(conf):
-    try:
-        S.save(APP_F, conf)
-    except OSError:
-        pass
+    """Ghi app.json ở luồng nền (kéo bong bóng / đổi cỡ cửa sổ không phải chờ ổ E: HDD)."""
+    _APP_LATEST[0] = json.loads(json.dumps(conf))
+
+    def run():
+        with _APP_LOCK:  # luôn ghi bản MỚI NHẤT, luồng nào tới sau cũng không đè bản cũ lên
+            try:
+                S.save(APP_F, _APP_LATEST[0])
+            except OSError:
+                pass
+    threading.Thread(target=run, daemon=True).start()
 
 
 def rounded_icon(size=64):
@@ -3017,6 +3027,7 @@ class Main(QWidget):
         self.save_text()
         self.save_geom()
         self.tray.hide()
+        S.flush()  # ghi nốt lần sửa cuối (bình thường luồng nền ghi sau 0,5 giây)
         QApplication.quit()
 
     # ----- hộp thoại -----
@@ -3293,8 +3304,22 @@ QSplitter#gsplit::handle {{ background: #2a2a30; }}
 """
 
 
+def pin_in_ram(min_mb=300, max_mb=2048):
+    """Giữ tối thiểu min_mb bộ nhớ của app luôn trong RAM. Bộ nhớ ảo (pagefile) máy này nằm trên ổ HDD E: hay nghẽn:
+    để yên một lúc Windows đẩy app ra đó, cú bấm đầu tiên phải chờ đọc lại 5 đến 10 giây (đo được 26/09)."""
+    try:
+        k = ctypes.windll.kernel32
+        k.SetProcessWorkingSetSizeEx.argtypes = [W.HANDLE, ctypes.c_size_t, ctypes.c_size_t, W.DWORD]
+        ok = k.SetProcessWorkingSetSizeEx(k.GetCurrentProcess(), min_mb << 20, max_mb << 20, 0x1 | 0x8)  # MIN cứng, MAX mềm
+        if not ok:
+            S.log("không giữ được app trong RAM, mã lỗi", ctypes.GetLastError())
+    except Exception as e:
+        S.log("không giữ được app trong RAM:", repr(e))
+
+
 def main():
     ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("DG.IdeaNote")
+    pin_in_ram()
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
     app.setWindowIcon(QIcon(ICON))
