@@ -488,7 +488,8 @@ class NoteDelegate(QStyledItemDelegate):
         p.setFont(f)
         p.setPen(QColor(C["muted"] if done else C["ink"]))
         p.drawText(QRect(x, r.top(), width, r.height()), Qt.AlignmentFlag.AlignVCenter, head)
-        rest, used = note_rest(n), fm.horizontalAdvance(head) + 12
+        rest = (self.win.q and self.win.snippet(n)) or note_rest(n)  # đang tìm: dòng khớp (kể cả trong ảnh) hiện trước
+        used = fm.horizontalAdvance(head) + 12
         if rest and width - used > 40:
             f2 = QFont(opt.font)
             p.setFont(f2)
@@ -1548,6 +1549,14 @@ class Main(QWidget):
         self.notes, self.by_id, self.order = [], {}, []
         self.sel = None
         self.rev = -1
+        self._hay_cache = {}     # id ghi chú -> (khoá, chữ đã bỏ dấu) để gõ tìm không phải bỏ dấu lại từ đầu
+        self._hits = {}          # id -> nhóm khớp khi đang tìm (0 tiêu đề, 1 nội dung, 2 chữ trong ảnh)
+        self._snips = {}         # (id, từ khoá) -> dòng gợi ý hiện mờ cạnh tiêu đề
+        self._side_q = False     # sidebar đang vẽ ở chế độ tìm kiếm hay không
+        self._thumbs = {}        # tên ảnh -> icon xem trước (nạp + co ảnh gốc mỗi lần là chậm)
+        self.search_timer = QTimer(self)
+        self.search_timer.setSingleShot(True)
+        self.search_timer.timeout.connect(self.do_search)
         self.pend = []           # ảnh chờ lưu ở ô ghi nhanh
         self.kind = "note"
         self.remind = None       # giờ nhắc của ô ghi nhanh
@@ -2062,6 +2071,7 @@ class Main(QWidget):
         if not force and S.REV[0] == self.rev:
             return
         self.rev = S.REV[0]
+        self._snips.clear()
         self.notes = snapshot()
         self.by_id = {n["id"]: n for n in self.notes}
         if not self.isVisible():  # đang ẩn xuống khay: chỉ cập nhật số trên bong bóng, mở ra mới vẽ lại danh sách
@@ -2069,6 +2079,9 @@ class Main(QWidget):
             self.bubble.set_count(sum(1 for n in self.notes if not n.get("deleted") and (is_urgent(n) or overdue(n))))
             return
         self._stale = False
+        for k in [k for k in self._hay_cache if k not in self.by_id]:
+            del self._hay_cache[k]
+        self._side_q = bool(self.q)
         self.render_side()
         self.render_list()
         self.mark_calendar()
@@ -2133,13 +2146,58 @@ class Main(QWidget):
             self.side.setCurrentItem(cur)
         self.side.blockSignals(False)
 
+    def hay(self, n):
+        """(tiêu đề, cả ghi chú, chữ trong ảnh) đã bỏ dấu, nhớ lại theo nội dung để lần gõ sau không tính lại."""
+        K = A_K()
+        ocr = tuple(K.ocr_text(f) for f in n.get("images") or [])
+        key = (n.get("title"), n.get("text"), n.get("project"), ocr)
+        hit = self._hay_cache.get(n["id"])
+        if hit and hit[0] == key:
+            return hit[1]
+        val = (fold(note_title(n)), fold(" ".join((n.get(k) or "") for k in ("title", "text", "project"))), fold("\n".join(ocr)))
+        self._hay_cache[n["id"]] = (key, val)
+        return val
+
+    def search_notes(self, arr):
+        """Ghi chú chứa đủ MỌI từ đã gõ (không cần đúng thứ tự, không cần dấu), ở chữ ghi chú hoặc chữ trong ảnh.
+        Ghi nhóm khớp vào self._hits: 0 tiêu đề, 1 nội dung, 2 chỉ có trong chữ ảnh."""
+        toks = fold(self.q).split()
+        self._hits, out = {}, []
+        for n in arr:
+            head, body, ocr = self.hay(n)
+            if not all(t in body or t in ocr for t in toks):
+                continue
+            self._hits[n["id"]] = 0 if all(t in head for t in toks) else 1 if all(t in body for t in toks) else 2
+            out.append(n)
+        return out
+
+    def snippet(self, n):
+        """Dòng đầu tiên khớp (trong chữ ghi chú hoặc chữ trong ảnh) để hiện mờ cạnh tiêu đề: thấy ngay vì sao ghi chú này hiện ra."""
+        key = (n["id"], self.q)
+        if key in self._snips:
+            return self._snips[key]
+        toks = fold(self.q).split()
+        found = ""
+        if toks and self._hits.get(n["id"], 0) != 0:
+            srcs = [("", n.get("text") or "")] + [("📝 ", A_K().ocr_text(f)) for f in n.get("images") or []]
+            for mark, text in srcs:
+                for line in text.splitlines():
+                    fl = fold(line)
+                    if any(t in fl for t in toks):
+                        found = mark + " ".join(line.split())
+                        break
+                if found:
+                    break
+        if len(self._snips) > 600:
+            self._snips.clear()
+        self._snips[key] = found
+        return found
+
     def visible(self):
         trash = self.filter == "trash"
         arr = [n for n in self.notes if bool(n.get("deleted")) == trash]
-        if self.q:  # tìm kiếm thì tìm cả việc đã xong
-            q = fold(self.q)
-            return [n for n in arr if q in fold(" ".join((n.get(k) or "") for k in ("title", "text", "project")))
-                    or q in fold(A_K().note_ocr(n))]  # tìm cả chữ máy đọc được trong ảnh
+        if self.q:  # tìm kiếm thì tìm cả việc đã xong, cả chữ máy đọc được trong ảnh
+            return self.search_notes(arr)
         if self.filter == "done":  # tab Hoàn thành (có thể chỉ của 1 dự án)
             return [n for n in arr if n["status"] == "done" and (self.done_scope is None or (n.get("project") or "") == self.done_scope)]
         if self.filter == "overview":  # tổng quan: toàn bộ, kể cả việc đã xong
@@ -2184,7 +2242,11 @@ class Main(QWidget):
     def render_list(self):
         arr = self.visible()
         by_day = self.filter in ("done", "trash") and not self.q
-        if by_day:  # tab Hoàn thành: ngày xong mới nhất trên cùng · thùng rác: theo ngày
+        if self.q:  # đang tìm: khớp tiêu đề trước, rồi nội dung, rồi chữ trong ảnh; trong nhóm mới nhất trước
+            arr.sort(key=lambda n: n.get("created") or "", reverse=True)
+            arr.sort(key=lambda n: self._hits.get(n["id"], 1))
+            key, label = (lambda n: self._hits.get(n["id"], 1)), (lambda k: ("🎯 Khớp tiêu đề", "📄 Khớp nội dung", "📝 Khớp chữ trong ảnh")[k])
+        elif by_day:  # tab Hoàn thành: ngày xong mới nhất trên cùng · thùng rác: theo ngày
             dkey = (lambda n: (n.get("done_at") or n.get("updated") or n["date"])[:10]) if self.filter == "done" else (lambda n: n["date"])
             arr.sort(key=lambda n: n.get("done_at") or n.get("updated") or n.get("created") or "", reverse=True)
             arr.sort(key=dkey, reverse=True)
@@ -2344,8 +2406,13 @@ class Main(QWidget):
         if [self.d_imgs.item(i).data(Qt.ItemDataRole.UserRole) for i in range(self.d_imgs.count())] != imgs:
             self.d_imgs.clear()
             for f in imgs:
-                it = QListWidgetItem(QIcon(QPixmap(img_path(f)).scaled(208, 208, Qt.AspectRatioMode.KeepAspectRatio,
-                                                                       Qt.TransformationMode.SmoothTransformation)), "")
+                ic = self._thumbs.get(f)
+                if ic is None:
+                    if len(self._thumbs) > 300:
+                        self._thumbs.clear()
+                    ic = self._thumbs[f] = QIcon(QPixmap(img_path(f)).scaled(208, 208, Qt.AspectRatioMode.KeepAspectRatio,
+                                                                            Qt.TransformationMode.SmoothTransformation))
+                it = QListWidgetItem(ic, "")
                 it.setData(Qt.ItemDataRole.UserRole, f)
                 self.d_imgs.addItem(it)
         for i in range(self.d_imgs.count()):  # di chuột lên ảnh: xem trước chữ máy đọc được
@@ -2643,7 +2710,18 @@ class Main(QWidget):
         self.flush_detail()  # gõ tìm kiếm: chỉ lưu chỗ đang sửa, không hỏi (ô Ghi nhanh vẫn giữ chữ)
         self.q = t.strip()
         self.sel = None
-        self.refresh(force=True)
+        self.search_timer.start(70)  # gõ nhanh nhiều phím thì gộp lại, danh sách vẫn hiện gần như tức thì
+
+    def do_search(self):
+        if S.REV[0] != self.rev or not self.isVisible():  # dữ liệu vừa đổi (vd máy đọc xong ảnh): làm mới đầy đủ
+            self.refresh(force=True)
+            return
+        # chỉ vẽ lại danh sách giữa: sidebar, lịch, ô dự án không phụ thuộc chữ đang tìm
+        if bool(self.q) != self._side_q:
+            self._side_q = bool(self.q)
+            self.render_side()
+        self.render_list()
+        self.fill_detail()
 
     def on_select(self, it, _prev=None):
         if it and it.data(Qt.ItemDataRole.UserRole + 1) == "n":
