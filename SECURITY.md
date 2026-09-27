@@ -12,6 +12,7 @@ Chỉ khi bạn bật hoặc bấm:
 - Gửi email nhắc hẹn: kết nối `smtp.gmail.com:465` bằng tài khoản Gmail của chính bạn.
 - Nút Lịch / Gmail: mở trang Google trong trình duyệt của bạn.
 - Lần đầu dùng mic: tải mô hình nhận dạng giọng nói (Whisper) từ Hugging Face.
+Trang giới thiệu (GitHub Pages) không có form và không thu thập gì: nút "Đăng ký miễn phí" chỉ là liên kết sang ducpt.com, việc đăng ký diễn ra trực tiếp ở đó.
 Đọc chữ trong ảnh, tìm theo nghĩa và hỏi AI chạy trong máy (OCR của Windows hoặc Tesseract, Ollama ở `127.0.0.1`). Ghi chú và ảnh không bị gửi đi đâu.
 
 ## Bản điện thoại (cùng Wi-Fi)
