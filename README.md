@@ -77,3 +77,6 @@ python ideanote_app.py
 
 ## Đóng gói bản mới
 `python build_release.py` tạo `release\IdeaNote-v…-win64.zip` (chỉ chương trình, không có dữ liệu), rồi đưa lên mục Releases của repo.
+
+## Giấy phép
+MIT, xem [LICENSE](LICENSE). Dùng, sửa, chia sẻ tự do, giữ nguyên dòng ghi tên tác giả.
