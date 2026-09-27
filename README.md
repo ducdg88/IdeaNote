@@ -80,3 +80,8 @@ python ideanote_app.py
 
 ## Giấy phép
 MIT, xem [LICENSE](LICENSE). Dùng, sửa, chia sẻ tự do, giữ nguyên dòng ghi tên tác giả.
+
+
+---
+
+Made by [DUCPT](https://ducpt.com/?utm_source=github&utm_medium=readme&utm_campaign=IdeaNote) — AI agents, automation and digital products for one-person businesses. 
