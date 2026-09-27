@@ -18,7 +18,7 @@ import server as S
 OLLAMA = "http://127.0.0.1:11434"
 MODEL = "qwen2.5:7b"
 # đo trên máy này (câu 8 giây): turbo GPU 0.5s · small CPU 2.5s · turbo CPU 12s -> GPU trước, đầy VRAM thì small CPU.
-# Model để ngay trong E:\IdeaNote\models: 24/09 có công cụ dọn mất cả ~/.cache/huggingface/hub làm app hết nghe được.
+# Model để ngay trong thư mục models cạnh app: 24/09 có công cụ dọn mất cả ~/.cache/huggingface/hub làm app hết nghe được.
 MODELS = os.path.join(S.ROOT, "models")
 WHISPER = [(os.path.join(MODELS, "large-v3-turbo"), "cuda", "int8_float16"),
            (os.path.join(MODELS, "small"), "cpu", "int8"),

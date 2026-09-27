@@ -8,6 +8,8 @@ Dữ liệu nằm trong thư mục data/ cạnh file này, tự sao lưu mỗi n
 import atexit
 import base64
 import datetime as dt
+import hmac
+import ipaddress
 import json
 import mimetypes
 import os
@@ -15,6 +17,7 @@ import re
 import secrets
 import shutil
 import socket
+import ssl
 import subprocess
 import sys
 import threading
@@ -33,7 +36,7 @@ BACKUP = os.path.join(DATA, "backup")
 NOTES_F = os.path.join(DATA, "notes.json")
 CONF_F = os.path.join(DATA, "config.json")
 PORT = int(os.environ.get("IDEANOTE_PORT") or 41900)
-VERSION = "1.1.0"
+VERSION = "1.1.1"
 LOCK = threading.RLock()
 STATIC = {"/icon.png": "icon.png", "/manifest.webmanifest": "manifest.webmanifest"}
 
@@ -489,6 +492,27 @@ def ics_for(n):
 
 
 # ---------- HTTP ----------
+MAX_BODY = 64 * 1024 * 1024   # ảnh gửi dạng base64 nên cho rộng; quá mức này là bất thường
+_FAILS = {}                    # ip -> [số lần sai khoá, mốc giờ] : chặn đoán khoá điện thoại
+FAIL_MAX, FAIL_WINDOW = 20, 300
+
+
+def key_ok(k):
+    return isinstance(k, str) and hmac.compare_digest(k.encode(), CONF["key"].encode())
+
+
+def host_ok(host):
+    """Chỉ nhận Host là localhost hoặc địa chỉ IP (mạng nhà). Tên miền lạ = DNS-rebinding từ trang web bên ngoài."""
+    name = urlparse("//" + (host or "")).hostname or ""
+    if name == "localhost":
+        return True
+    try:
+        ipaddress.ip_address(name)
+        return True
+    except ValueError:
+        return False
+
+
 class H(BaseHTTPRequestHandler):
     server_version = "IdeaNote"
 
@@ -501,10 +525,35 @@ class H(BaseHTTPRequestHandler):
     def authed(self):
         if self.local():
             return True
-        if parse_qs(urlparse(self.path).query).get("k", [""])[0] == CONF["key"]:
-            return True
+        ip = self.client_address[0]
+        now = time.time()
+        f = _FAILS.get(ip)
+        if f and now - f[1] > FAIL_WINDOW:
+            _FAILS.pop(ip, None)
+            f = None
+        if f and f[0] >= FAIL_MAX:  # đoán sai quá nhiều: khoá tạm cả khoá đúng
+            return False
+        k = parse_qs(urlparse(self.path).query).get("k", [""])[0]
         c = cookies.SimpleCookie(self.headers.get("Cookie", ""))
-        return "ink" in c and c["ink"].value == CONF["key"]
+        sent = k or ("ink" in c and c["ink"].value)
+        if key_ok(k) or ("ink" in c and key_ok(c["ink"].value)):
+            _FAILS.pop(ip, None)
+            return True
+        if sent:  # có gửi khoá mà sai
+            _FAILS[ip] = [(f[0] if f else 0) + 1, f[1] if f else now]
+        return False
+
+    def guard(self, write=False):
+        """Chặn trang web lạ trong trình duyệt gọi vào máy chủ: Host phải là localhost/IP, ghi dữ liệu thì Origin phải cùng nơi."""
+        host = self.headers.get("Host") or ""
+        if not host_ok(host):
+            self.send(403, {"error": "Host không hợp lệ"})
+            return False
+        origin = self.headers.get("Origin")
+        if write and origin is not None and urlparse(origin).netloc != host:
+            self.send(403, {"error": "Nguồn gọi không hợp lệ"})
+            return False
+        return True
 
     def send(self, code, body=b"", ctype="application/json; charset=utf-8", headers=None, cache=False):
         if isinstance(body, (dict, list)):
@@ -515,6 +564,9 @@ class H(BaseHTTPRequestHandler):
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "max-age=31536000, immutable" if cache else "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")  # khoá điện thoại nằm trong ?k= : không để lọt qua Referer
+        self.send_header("X-Frame-Options", "DENY")
         for k, v in (headers or {}).items():
             self.send_header(k, v)
         self.end_headers()
@@ -522,18 +574,23 @@ class H(BaseHTTPRequestHandler):
 
     def body(self):
         n = int(self.headers.get("Content-Length") or 0)
+        if not 0 <= n <= MAX_BODY:
+            raise ValueError("Nội dung gửi lên quá lớn")
         return json.loads(self.rfile.read(n)) if n else {}
 
     def note_id(self, prefix):
         return urlparse(self.path).path[len(prefix):].strip("/")
 
     def do_GET(self):
+        if not self.guard():
+            return
         u = urlparse(self.path)
         p = u.path
         if p in ("/", "/index.html"):
             hdr = {}
-            if parse_qs(u.query).get("k", [""])[0] == CONF["key"]:
-                hdr["Set-Cookie"] = f"ink={CONF['key']}; Max-Age=31536000; Path=/; HttpOnly; SameSite=Lax"
+            if key_ok(parse_qs(u.query).get("k", [""])[0]):
+                secure = "; Secure" if isinstance(self.connection, ssl.SSLSocket) else ""
+                hdr["Set-Cookie"] = f"ink={CONF['key']}; Max-Age=31536000; Path=/; HttpOnly; SameSite=Strict{secure}"
             with open(os.path.join(ROOT, "index.html"), "rb") as f:
                 return self.send(200, f.read(), "text/html; charset=utf-8", hdr)
         if p in STATIC:
@@ -569,6 +626,8 @@ class H(BaseHTTPRequestHandler):
         self.send(404, {"error": "không thấy"})
 
     def do_POST(self):
+        if not self.guard(True):
+            return
         if not self.authed():
             return self.send(401, {"error": "Quét mã QR trên máy tính để mở"})
         p = urlparse(self.path).path
@@ -587,7 +646,10 @@ class H(BaseHTTPRequestHandler):
             except Exception as e:
                 log("ghi âm điện thoại lỗi:", repr(e))
                 return self.send(500, {"error": f"Máy tính chưa nghe được đoạn này: {e}"})
-        b = self.body()
+        try:
+            b = self.body()
+        except ValueError as e:
+            return self.send(400, {"error": str(e)})
         if p == "/api/notes":
             return self.send(200, new_note(b, "pc" if self.local() else "phone"))
         if p == "/api/ask":  # hỏi kho kiến thức: trả lời + ghi chú nguồn
@@ -612,10 +674,15 @@ class H(BaseHTTPRequestHandler):
         self.send(404, {"error": "không thấy"})
 
     def do_PUT(self):
+        if not self.guard(True):
+            return
         if not self.authed():
             return self.send(401, {"error": "Quét mã QR trên máy tính để mở"})
         nid = self.note_id("/api/notes/")
-        b = self.body()
+        try:
+            b = self.body()
+        except ValueError as e:
+            return self.send(400, {"error": str(e)})
         with LOCK:
             n = next((x for x in NOTES if x["id"] == nid), None)
             if not n:
@@ -630,6 +697,8 @@ class H(BaseHTTPRequestHandler):
             return self.send(200, n)
 
     def do_DELETE(self):
+        if not self.guard(True):
+            return
         if not self.authed():
             return self.send(401, {"error": "Quét mã QR trên máy tính để mở"})
         nid = self.note_id("/api/notes/")

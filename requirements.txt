@@ -1,0 +1,7 @@
+PySide6
+faster-whisper
+pyaudio
+qrcode
+pillow
+cryptography
+numpy
