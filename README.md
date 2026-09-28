@@ -1,3 +1,5 @@
+**🇻🇳 Tiếng Việt** · [🇬🇧 English](README.en.md)
+
 # Idea Note
 
 App Windows ghi chú nhanh thay cho việc tự gửi vào Zalo hay Facebook: chữ và ảnh, gom theo dự án, việc cần làm, việc gấp, nhắc hẹn, chép ngữ cảnh sang Claude. Có sẵn **bản điện thoại** (mở bằng trình duyệt, quét mã QR) và **kho kiến thức hỏi được bằng AI**, tìm được cả chữ trong ảnh chụp.
@@ -84,4 +86,4 @@ MIT, xem [LICENSE](LICENSE). Dùng, sửa, chia sẻ tự do, giữ nguyên dòn
 
 ---
 
-Made by [DUCPT](https://ducpt.com/?utm_source=github&utm_medium=readme&utm_campaign=IdeaNote) — AI agents, automation and digital products for one-person businesses. 
+Made by [DUCPT](https://ducpt.com/?utm_source=github&utm_medium=readme&utm_campaign=IdeaNote): AI agents, automation and digital products for one-person businesses. 
